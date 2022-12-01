@@ -2,7 +2,7 @@
 
 ## Authors
 
-The Hackers: Mitchell, Will, Minh-Tri, Alex, and Tom
+Mitchell, Will, Minh-Tri, Alex, and Tom
 
 ## Project Structure
 
