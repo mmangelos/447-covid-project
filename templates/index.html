@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>COVID-19 In Criminal Justice Facilities</title>
+
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <script src='https://api.mapbox.com/mapbox.js/v3.3.1/mapbox.js'></script>
+    <link href='https://api.mapbox.com/mapbox.js/v3.3.1/mapbox.css' rel='stylesheet' />
+
+    <!-- For marker clustering -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="./css/clusters.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+
+    <!-- for translating between fips code and state name (difference exists between database
+        and GeoJSON files)  -->
+    <script src="./js/fips_to_state.js"></script>
+
+    <!-- slider -->
+    <link rel="stylesheet" href="./css/rSlider.css" />
+    <script src="./js/rSlider.js" type="text/javascript"></script>
+
+	<style>
+        * {
+            font-family: Helvetica, Arial, Sans-Serif;
+        }
+
+        #title {
+            font-size: 1.2em;
+            display: inline;
+        }
+
+        #topbar {
+            position: absolute;
+            top: 0vh;
+            left: 0vw;
+            height: 5vh;
+            padding: 0.5vh 0vw 0.2vh 0vw;
+            width: 100vw;
+            overflow: hidden;
+        }
+
+        #topbar * {
+            line-height: 4vh;
+        }
+
+        #topbar-title {
+        }
+        #topbar-controls {
+        }
+
+        #map-container {
+            position: absolute;
+            top: 5vh;
+            left: 0vw;
+            width: 100vw;
+            padding: 0;
+        }
+
+		#map {
+			height: 85vh;
+		}
+
+        #slider-container {
+            position: absolute;
+            top: 90vh;
+            left: 0vw;
+            width: 100vw;
+            height: 6vh;
+        }
+
+        .rs-container, .rs-bg, .rs-scale {
+            width: 90vw !important;
+        }
+
+        .rs-container {
+            position: relative;
+            left: 5vw;
+            top: 3vh;
+        }
+
+        /* fix for firefox */
+        .rs-scale {
+            width: 95vw !important;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0; bottom: 0;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+            z-index: 9999;
+            white-space: nowrap;
+            overflow: invisible;
+            background: url('img/loading.png') 50% 50% no-repeat white;
+        }
+
+	</style>
+
+</head>
+<body>
+    <div id="overlay">
+    </div>
+
+<script>
+    // show a loading animation so the page doesn't look jumbled
+    // while it is loading in firefox (mapbox loads slowly in firefox,
+    // specifcally, it's the network request that is slow, so we can't
+    // do much about it -- unless we wanted to host our own mapbox
+    // server)
+    setTimeout(function() {
+        document.getElementById("overlay").style["display"] = "none";
+    }, 1000);
+</script>
+
+
+    <div id="topbar">
+        <div id="topbar-title" style="float: left;">
+            &nbsp; &nbsp; &nbsp; &nbsp;
+            <h1 id="title">COVID-19 In Criminal Justice Facilities</h1>
+
+            &nbsp;&nbsp;&nbsp; Legend:
+            <span id="heat-levels">
+                <span id="heat-target"></span>
+            </span>
+        </div>
+
+        <div id="topbar-controls" style="float: right;">
+        </div>
+
+        <div style="clear: none;"></div>
+    </div>
+
+    <div id="map-container">
+        <div id='map'></div>
+    </div>
+
+    <!-- optimization for firefox which calculates dates slowly -->
+    <script src="/js/dateRange.js"></script>
+
+    <!-- main front-end code -->
+    <script type="text/javascript">
+
+    // equivalent to jquery $.get, from plainjs.com
+    function get(url, success) {
+        var xhr = window.XMLHttpRequest ? new XMLHttpRequest() : new ActiveXObject('Microsoft.XMLHTTP');
+        xhr.open('GET', url);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState>3 && xhr.status==200) success(xhr.responseText);
+        };
+        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+        xhr.send();
+        return xhr;
+    }
+
+    // use access token
+    L.mapbox.accessToken = "pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw";
+
+    // create map
+    var map = L.map('map').setView([37.75, -120], 5.5);
+
+    // add state overlays
+    var usStates = L.mapbox.featureLayer().addTo(map);
+    usStates.loadURL('/geo/us_states.json');
+
+    // add county overlays
+    var usCounties = L.mapbox.featureLayer().addTo(map);
+    usCounties.loadURL('/geo/us_counties.json');
+
+    // define a county color pallette
+    var countyColorScale = [
+        "#FEDEBE",      // lowest
+        "#FFAF42",
+        "#FF8303",
+        "#FE6E00",
+        "#FD5602"      // highest
+    ];
+
+    
+    // setup legend for heatmap
+    var heatMapInterval = 2500;
+    var target = document.querySelector("#heat-target")
+    for (var i = countyColorScale.length - 1; i >= 0; i--) {
+        var span = document.createElement('span');
+        // construct a span to represent the heat level
+        span.innerHTML = "&nbsp;" + (i * heatMapInterval) + "+&nbsp;";
+        span.style["background"] = countyColorScale[i];
+
+        target.parentNode.insertBefore(span, target.nextSibling );
+    }
+
+    // pull county data between startDate and endDate from the API
+    // and update the county overlay styles to create a heatmap
+    // of the case counts within them
+    function updateCounties(startDate, endDate) {
+        // query API for county data
+        get("/api/county-samples?startDate=" + startDate + "&endDate=" + endDate, function(data) {
+            data = JSON.parse(data);
+
+            // update county overlay colors
+            usCounties.eachLayer(function(layer, i) {
+                var props = layer.feature.properties;
+
+                // translate fips code to state name (that's how our API indexes data)
+                var state = FIPS_TO_STATE[props.STATE];
+
+                // ignore invalid fips codes until they acheive statehood
+                if (! (props.STATE in FIPS_TO_STATE)) {
+                    return;
+                }
+  
+                var county = props.NAME;
+
+                // our GeoJSON file might be a bit better than our database
+                // if it has a county we have no data for, skip it
+                if (county in data[state] && "county_date" in data[state][county]) {
+                    // we now have enough to get the data for this layer from the
+                    // query result
+                    var county_data = data[state][county];
+                    var cases = parseInt(data[state][county]["cases"]);
+                    var deaths = parseInt(data[state][county]["deaths"]);
+                    var date = data[state][county]["county_date"].split("T")[0];
+
+                    // decide the heat level based on a fixed scale,
+                    // 0-12500+ and increase at intervals of 2.5k
+                    var heat = Math.floor(cases / heatMapInterval);
+                    if (heat > countyColorScale.length - 1 ) {
+                        heat = countyColorScale.length - 1;
+                    }
+
+                    layer.setStyle({
+                        fillColor: countyColorScale[heat]
+                    });
+
+                    // add per county tooltip
+                    var tooltip = "State: " + state;
+                    tooltip += "<br />";
+                    tooltip += "County: " + county;
+                    tooltip += "<br />";
+                    tooltip += "Date: " + date;
+                    tooltip += "<br />";
+                    tooltip += "Cases: " + cases;
+                    tooltip += "<br />";
+                    tooltip += "Deaths: " + deaths;
+                    tooltip += "<br />";
+                    layer.unbindTooltip();
+                    layer.bindTooltip(tooltip, { direction: "right" });
+                } else {
+                    layer.setStyle({
+                        fillColor: "rgba(0,0,0,0.75);"
+                    });
+                    layer.unbindTooltip();
+		}
+            });
+        });
+    }
+
+
+    // pull facilities between startDate and endDate from the API and
+    // render on map
+    function updateFacilities(startDate, endDate) {
+        // add pins for facilities
+        get("/api/facility-samples?startDate=" + startDate + "&endDate=" + endDate, function(data) {
+            // remove the old layer, if any
+            if ('undefined' !== typeof markers) {
+                map.removeLayer(markers);
+            }
+
+            // create clustering layer for marker pins
+            markers = L.markerClusterGroup();
+
+
+            // render a tooltip pop-up per facility
+            var facilities = JSON.parse(data)["facilities"];
+            for (var i = 0; i < facilities.length; i++) {
+                var tooltip = "Facility: " + facilities[i]["name"];
+                tooltip += "<br />";
+                tooltip += "Confirmed Cases: " + facilities[i]["confirmed_cases"];
+                tooltip += "<br />";
+                tooltip += "Date: " + facilities[i]["facility_date"];
+
+                var marker = L.marker([facilities[i]["latitude"], facilities[i]["longitude"]]).bindTooltip(tooltip, {direction: "right"});
+                markers.addLayer(marker);
+            }
+            map.addLayer(markers);
+        });
+    }
+
+    // default to widest possible spread
+    updateFacilities(dates[0], dates[dates.length - 1]);
+
+    //implmentation of the map itself
+    L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw', {
+        maxZoom: 18,
+        attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
+            'Imagery © <a href="https://www.mapbox.com/">Mapbox</a>',
+        id: 'mapbox/light-v9',
+        tileSize: 512,
+        zoomOffset: -1
+    }).addTo(map);
+
+    </script>
+
+<div id="slider-container">
+    <input type="text" id="slider" class="slider" />
+</div>
+
+<script>
+    // we default to showing the counties, but they can be hidden
+    var showCounties = true;
+    // initialize/configure slider control
+    (function() {
+      'use strict';
+
+      var init = function() {
+        var slider = new rSlider({
+          target: '#slider',
+          values: dates,
+          range: true,
+          scale: false,
+          labels: false,
+          step: 100 /  dates.length,
+
+          // update data after dragging the slider
+          onChange: function(vals) {
+                var tokens = vals.split(",");
+                var startDate = tokens[0];
+                var endDate = tokens[1];
+                updateFacilities(startDate, endDate);
+                if (showCounties) {
+                    updateCounties(startDate, endDate);
+                }
+          }
+        });
+
+
+	// hide left slider
+	document.getElementsByClassName("rs-pointer")[0].remove();
+      };
+      window.onload = init;
+    })();
+
+</script>
+
+
+</body>
+</html>
+

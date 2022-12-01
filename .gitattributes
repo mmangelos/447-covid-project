@@ -1,0 +1,1 @@
+static/geo/*.geojson filter=lfs diff=lfs merge=lfs -text
